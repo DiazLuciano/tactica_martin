@@ -1,4 +1,6 @@
-﻿Public Class frmVentas
+﻿Imports ClosedXML.Excel
+
+Public Class frmVentas
     Private ReadOnly _ventaService As New VentaService()
     Private ReadOnly _clienteService As New ClienteService() ' Asumo que tienes este servicio
     Private _ventasActuales As List(Of Venta)
@@ -16,6 +18,7 @@
     Private WithEvents btnNuevaVenta As Button
     Private WithEvents btnModificarVenta As Button
     Private WithEvents btnAnularVenta As Button
+    Private WithEvents btnExportarExcel As Button
 
     Private Sub frmVentas_Load(sender As Object, e As EventArgs) Handles MyBase.Load
         ConfigurarControles()
@@ -96,6 +99,16 @@
             .Enabled = False
         }
         Me.Controls.Add(btnAnularVenta)
+
+        btnExportarExcel = New Button() With {
+        .Text = "Exportar Excel",
+        .Location = New Point(410, 540),  ' Misma fila (Y=540)
+        .Size = New Size(120, 30),
+        .BackColor = Color.LightGreen    ' Opcional: para distinguirlo
+    }
+        Me.Controls.Add(btnExportarExcel)
+
+        Me.ClientSize = New Size(850, 600)  ' Aumentado el alto si es necesario
     End Sub
 
     Private Sub ConfigurarGrids()
@@ -113,6 +126,162 @@
         dgvDetalleVenta.Columns.Add("Cantidad", "Cantidad")
         dgvDetalleVenta.Columns.Add("PrecioUnitario", "Precio Unitario")
         dgvDetalleVenta.Columns.Add("PrecioTotal", "Total")
+    End Sub
+
+    Private Sub btnExportarExcel_Click(sender As Object, e As EventArgs) Handles btnExportarExcel.Click
+        If _ventasActuales Is Nothing OrElse _ventasActuales.Count = 0 Then
+            MessageBox.Show("No hay datos para exportar", "Información", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+
+        Try
+            Dim saveFileDialog As New SaveFileDialog()
+            saveFileDialog.Filter = "Archivo Excel|*.xlsx"
+            saveFileDialog.Title = "Guardar reporte de ventas"
+            saveFileDialog.FileName = $"Reporte_Ventas_{DateTime.Now:yyyyMMdd}.xlsx"
+
+            If saveFileDialog.ShowDialog() = DialogResult.OK Then
+                GenerarReporteExcel(saveFileDialog.FileName)
+                MessageBox.Show("Reporte generado exitosamente", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            End If
+        Catch ex As Exception
+            MostrarError("Error al generar reporte: " & ex.Message)
+        End Try
+    End Sub
+    Private Sub GenerarReporteExcel(rutaArchivo As String)
+        Using workbook As New XLWorkbook()
+            ' Hoja para resumen de ventas
+            Dim wsResumen = workbook.Worksheets.Add("Resumen Ventas")
+
+            ' Encabezados resumen
+            wsResumen.Cell(1, 1).Value = "REPORTE DE VENTAS"
+            wsResumen.Cell(1, 1).Style.Font.Bold = True
+            wsResumen.Cell(1, 1).Style.Font.FontSize = 14
+            wsResumen.Range(1, 1, 1, 7).Merge()
+
+            ' Filtros aplicados
+            wsResumen.Cell(2, 1).Value = $"Fecha: {dtpFechaDesde.Value:dd/MM/yyyy} - {dtpFechaHasta.Value:dd/MM/yyyy}"
+            wsResumen.Cell(3, 1).Value = $"Cliente: {If(String.IsNullOrEmpty(txtBuscarCliente.Text), "Todos", txtBuscarCliente.Text)}"
+
+            ' Encabezados tabla resumen
+            wsResumen.Cell(5, 1).Value = "ID Venta"
+            wsResumen.Cell(5, 2).Value = "Fecha"
+            wsResumen.Cell(5, 3).Value = "Cliente"
+            wsResumen.Cell(5, 4).Value = "Total"
+            wsResumen.Cell(5, 5).Value = "Estado"
+            wsResumen.Cell(5, 6).Value = "Productos"
+            wsResumen.Cell(5, 7).Value = "Cantidad Total"
+
+            ' Estilo encabezados
+            Dim headerRange = wsResumen.Range(5, 1, 5, 7)
+            headerRange.Style.Font.Bold = True
+            headerRange.Style.Fill.BackgroundColor = XLColor.LightGray
+            headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center
+
+            ' Datos resumen
+            Dim filaResumen = 6
+            For Each venta In _ventasActuales
+                Dim cliente = _clienteService.ObtenerPorId(venta.IDCliente)
+                Dim nombreCliente = If(cliente IsNot Nothing, cliente.Nombre, "Cliente no encontrado")
+                Dim items = _ventaService.ObtenerDetallePorVentaId(venta.ID)
+
+                wsResumen.Cell(filaResumen, 1).Value = venta.ID
+                wsResumen.Cell(filaResumen, 2).Value = venta.Fecha
+                wsResumen.Cell(filaResumen, 2).Style.DateFormat.Format = "dd/MM/yyyy"
+                wsResumen.Cell(filaResumen, 3).Value = nombreCliente
+                wsResumen.Cell(filaResumen, 4).Value = venta.Total
+                wsResumen.Cell(filaResumen, 4).Style.NumberFormat.Format = "$ #,##0.00"
+                wsResumen.Cell(filaResumen, 5).Value = If(venta.Estado = 1, "Activa", "Anulada")
+                wsResumen.Cell(filaResumen, 6).Value = items.Count
+                wsResumen.Cell(filaResumen, 7).Value = items.Sum(Function(i) i.Cantidad)
+
+                ' Crear hoja de detalle para cada venta
+                If items.Count > 0 Then
+                    Dim wsDetalle = workbook.Worksheets.Add($"Venta_{venta.ID}")
+                    GenerarHojaDetalle(wsDetalle, venta, items)
+                End If
+
+                filaResumen += 1
+            Next
+
+            ' Totales y formato
+            wsResumen.Cell(filaResumen, 3).Value = "TOTALES:"
+            wsResumen.Cell(filaResumen, 4).Value = _ventasActuales.Where(Function(v) v.Estado = 1).Sum(Function(v) v.Total)
+            wsResumen.Cell(filaResumen, 4).Style.NumberFormat.Format = "$ #,##0.00"
+            wsResumen.Cell(filaResumen, 7).Value = _ventasActuales.Sum(Function(v) _ventaService.ObtenerDetallePorVentaId(v.ID).Sum(Function(i) i.Cantidad))
+
+            Dim totalRange = wsResumen.Range(filaResumen, 1, filaResumen, 7)
+            totalRange.Style.Font.Bold = True
+            totalRange.Style.Fill.BackgroundColor = XLColor.LightBlue
+
+            ' Ajustar columnas
+            wsResumen.Columns().AdjustToContents()
+
+            ' Guardar
+            workbook.SaveAs(rutaArchivo)
+        End Using
+    End Sub
+
+    Private Sub GenerarHojaDetalle(worksheet As IXLWorksheet, venta As Venta, items As List(Of VentaItem))
+        ' Título
+        worksheet.Cell(1, 1).Value = $"DETALLE DE VENTA #{venta.ID}"
+        worksheet.Cell(1, 1).Style.Font.Bold = True
+        worksheet.Cell(1, 1).Style.Font.FontSize = 12
+        worksheet.Range(1, 1, 1, 5).Merge()
+
+        ' Info cabecera
+        worksheet.Cell(2, 1).Value = $"Fecha: {venta.Fecha:dd/MM/yyyy}"
+        worksheet.Cell(3, 1).Value = $"Cliente: {_clienteService.ObtenerPorId(venta.IDCliente)?.Nombre}"
+        worksheet.Cell(4, 1).Value = $"Estado: {If(venta.Estado = 1, "Activa", "Anulada")}"
+
+        ' Encabezados detalle
+        worksheet.Cell(6, 1).Value = "Producto"
+        worksheet.Cell(6, 2).Value = "Cantidad"
+        worksheet.Cell(6, 3).Value = "Precio Unitario"
+        worksheet.Cell(6, 4).Value = "Total"
+        worksheet.Cell(6, 5).Value = "Categoría"
+
+        ' Estilo encabezados
+        Dim headerRange = worksheet.Range(6, 1, 6, 5)
+        headerRange.Style.Font.Bold = True
+        headerRange.Style.Fill.BackgroundColor = XLColor.LightGray
+
+        ' Datos detalle
+        Dim fila = 7
+        For Each item In items
+            worksheet.Cell(fila, 1).Value = item.Producto.Nombre
+            worksheet.Cell(fila, 2).Value = item.Cantidad
+            worksheet.Cell(fila, 3).Value = item.PrecioUnitario
+            worksheet.Cell(fila, 3).Style.NumberFormat.Format = "$ #,##0.00"
+            worksheet.Cell(fila, 4).Value = item.PrecioTotal
+            worksheet.Cell(fila, 4).Style.NumberFormat.Format = "$ #,##0.00"
+            worksheet.Cell(fila, 5).Value = item.Producto.Categoria
+
+            fila += 1
+        Next
+
+        ' Totales
+        worksheet.Cell(fila, 3).Value = "TOTAL:"
+        worksheet.Cell(fila, 4).Value = items.Sum(Function(i) i.PrecioTotal)
+        worksheet.Cell(fila, 4).Style.NumberFormat.Format = "$ #,##0.00"
+
+        Dim totalRange = worksheet.Range(fila, 1, fila, 5)
+        totalRange.Style.Font.Bold = True
+        totalRange.Style.Fill.BackgroundColor = XLColor.LightBlue
+
+        ' Ajustar columnas
+        worksheet.Columns().AdjustToContents()
+    End Sub
+
+    Private Sub ReleaseObject(ByVal obj As Object)
+        Try
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(obj)
+            obj = Nothing
+        Catch ex As Exception
+            obj = Nothing
+        Finally
+            GC.Collect()
+        End Try
     End Sub
 
     Private Sub CargarVentasIniciales()

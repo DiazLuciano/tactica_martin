@@ -3,7 +3,7 @@
     Public Property IDCliente As Integer
     Public Property Fecha As DateTime
     Public Property Total As Double
-    Public Property Estado As Boolean
+    Public Property Estado As Integer
     Public Property Items As List(Of VentaItem)
 
     Public Sub New()
